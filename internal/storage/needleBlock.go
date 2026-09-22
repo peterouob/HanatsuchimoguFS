@@ -63,7 +63,7 @@ func NewNeedle(key uint64, altKey uint32, cookie uint64, data []byte, flag ...by
 		f = flag[0]
 	}
 
-	dataSize, err := utils.CIU32(len(data))
+	dataSize, err := utils.CIU[int, uint32](len(data))
 	if err != nil {
 		panic(err) // TODO: need to handle this error
 	}
@@ -85,7 +85,7 @@ func NewNeedle(key uint64, altKey uint32, cookie uint64, data []byte, flag ...by
 func (n *Needle) Bytes(bp *BufferPool) (*Buffer, error) {
 	totalSize := NeedleHeaderSize + len(n.Data) + NeedleFooterSize
 
-	size, err := utils.CIU32(totalSize)
+	size, err := utils.CIU[int, uint32](totalSize)
 	if err != nil {
 		return nil, fmt.Errorf("needle size %d: %w", totalSize, err)
 	}
@@ -155,8 +155,4 @@ func GetNeedleBlockInfo(totalSize, metaSize uint32, buf []byte) ([]byte, error) 
 	data := dataWithHeader[NeedleHeaderSize : NeedleHeaderSize+metaSize]
 
 	return data, nil
-}
-
-func align8(size uint32) uint32 {
-	return (size + 7) &^ 7
 }

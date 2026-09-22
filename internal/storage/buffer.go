@@ -69,7 +69,7 @@ func (b *BufferPool) Get(size uint32) (*Buffer, error) {
 }
 
 func (b *BufferPool) Put(buf *Buffer) {
-	capacity, _ := utils.CIU32(cap(buf.B))
+	capacity, _ := utils.CIU[int, uint32](cap(buf.B))
 	if pool, ok := b.pools[capacity]; ok {
 		pool.Put(buf)
 	}

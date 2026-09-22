@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"time"
+
+	"github.com/peterouob/HanatsuchimoguFS/utils"
 )
 
 const (
@@ -39,11 +41,21 @@ func (s Superblock) Sealed() bool {
 func (s Superblock) Bytes() []byte {
 	buf := make([]byte, SuperblockSize)
 
+	crated, err := utils.CIU[int64, uint64](s.CreatedAtUnixNano)
+	if err != nil {
+		panic(err) // TODO: handle this error
+	}
+
+	sealed, err := utils.CIU[int64, uint64](s.SealedAtUnixNano)
+	if err != nil {
+		panic(err) // TODO: handle this error
+	}
+
 	binary.BigEndian.PutUint32(buf[0:4], MagicSuperblock)
 	binary.BigEndian.PutUint32(buf[4:8], s.FormatVersion)
 	binary.BigEndian.PutUint64(buf[8:16], s.VolumeID)
-	binary.BigEndian.PutUint64(buf[16:24], uint64(s.CreatedAtUnixNano))
-	binary.BigEndian.PutUint64(buf[24:32], uint64(s.SealedAtUnixNano))
+	binary.BigEndian.PutUint64(buf[16:24], crated)
+	binary.BigEndian.PutUint64(buf[24:32], sealed)
 	binary.BigEndian.PutUint32(buf[32:36], NeedleStartOffset)
 
 	return buf
@@ -67,27 +79,36 @@ func ReadSuperblock(r io.ReaderAt) (Superblock, error) {
 		return Superblock{}, ErrInvalidSuperblock
 	}
 
+	crated, err := utils.CUI[uint64, int64](binary.BigEndian.Uint64(buf[16:24]))
+	if err != nil {
+		return Superblock{}, err
+	}
+
+	sealed, err := utils.CUI[uint64, int64](binary.BigEndian.Uint64(buf[24:32]))
+	if err != nil {
+		return Superblock{}, err
+	}
+
 	s := Superblock{
 		Magic:             binary.BigEndian.Uint32(buf[0:4]),
 		FormatVersion:     binary.BigEndian.Uint32(buf[4:8]),
 		VolumeID:          binary.BigEndian.Uint64(buf[8:16]),
-		CreatedAtUnixNano: int64(binary.BigEndian.Uint64(buf[16:24])),
-		SealedAtUnixNano:  int64(binary.BigEndian.Uint64(buf[24:32])),
+		CreatedAtUnixNano: crated,
+		SealedAtUnixNano:  sealed,
 	}
 
-	if s.Magic != MagicSuperblock {
+	start := binary.BigEndian.Uint32(buf[32:36])
+
+	switch {
+	case s.Magic != MagicSuperblock:
 		return Superblock{}, fmt.Errorf("%w: %d", ErrInvalidSuperblock, s.Magic)
-	}
-
-	if s.FormatVersion != FormatVersion {
+	case s.FormatVersion != FormatVersion:
 		return Superblock{}, fmt.Errorf("%w: %d", ErrUnsupportedFormatVersion, s.FormatVersion)
-	}
-
-	if start := binary.BigEndian.Uint32(buf[32:36]); start != NeedleStartOffset {
+	case start != NeedleStartOffset:
 		return Superblock{}, fmt.Errorf("%w: needle start offset %d", ErrInvalidSuperblock, start)
+	default:
+		return s, nil
 	}
-
-	return s, nil
 }
 
 func SealSuperblock(w io.WriterAt, sealedAtUnixNano int64) error {

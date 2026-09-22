@@ -2,7 +2,6 @@ package utils
 
 import (
 	"errors"
-	"math"
 )
 
 var (
@@ -14,14 +13,35 @@ type NNumber interface {
 	int | int8 | int16 | int32 | int64
 }
 
-func CIU32[T NNumber](i T) (uint32, error) {
-	if int64(i) > int64(math.MaxUint32) {
-		return 0, ErrOverflow
-	}
+type UNumber interface {
+	uint | uint8 | uint16 | uint32 | uint64
+}
+
+func CIU[T NNumber, U UNumber](i T) (U, error) {
+	var zero U
 
 	if i < 0 {
-		return 0, ErrNoneNegative
+		return zero, ErrOverflow
 	}
 
-	return uint32(i), nil
+	converted := U(i)
+	if T(converted) != i {
+		return zero, ErrOverflow
+	}
+
+	return converted, nil
+}
+
+func CUI[T UNumber, N NNumber](i T) (N, error) {
+	var zero N
+	if i < 0 {
+		return zero, ErrOverflow
+	}
+
+	converted := N(i)
+	if T(converted) != i {
+		return zero, ErrOverflow
+	}
+
+	return converted, nil
 }
