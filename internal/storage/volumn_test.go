@@ -20,20 +20,20 @@ func TestWrite(t *testing.T) {
 	key := KeyPair{Key: 1, AltKey: 100}
 	metas := volume.index[key]
 
-	assert.Equal(t, int64(0), metas.Offset, "First offset should be 0")
+	assert.Equal(t, int64(NeedleStartOffset), metas.Offset, "First offset should start after the superblock")
 	assert.Equal(t, uint32(4096), metas.Size, "Size should be data size only")
 
 	// header + data + footer + padding
 	// (29+ 4096 + 8 + n) % 8 = 0;total = 4136
 	expectedTotalSize := int64(4136)
-	assert.Equal(t, expectedTotalSize, volume.writeOffset, "Write offset calculation incorrect")
+	assert.Equal(t, int64(NeedleStartOffset)+expectedTotalSize, volume.writeOffset, "Write offset calculation incorrect")
 
 	assert.NoError(t, volume.Write(needle))
 	metas = volume.index[key]
 
-	assert.Equal(t, expectedTotalSize, metas.Offset, "Second offset should start after first needle")
+	assert.Equal(t, int64(NeedleStartOffset)+expectedTotalSize, metas.Offset, "Second offset should start after first needle")
 
-	assert.Equal(t, expectedTotalSize*2, volume.writeOffset, "Final write offset incorrect")
+	assert.Equal(t, int64(NeedleStartOffset)+expectedTotalSize*2, volume.writeOffset, "Final write offset incorrect")
 }
 
 func setupTestVolume(tb testing.TB) (*Volume, *os.File) {
@@ -45,7 +45,10 @@ func setupTestVolume(tb testing.TB) (*Volume, *os.File) {
 
 	tb.Cleanup(func() { _ = f.Close() })
 
-	return NewVolume(f), f
+	v, err := NewVolume(f, 1)
+	require.NoError(tb, err)
+
+	return v, f
 }
 
 func TestVolume_Read(t *testing.T) {
@@ -171,7 +174,7 @@ func TestVolume_Delete(t *testing.T) {
 		v, _ := setupTestVolume(t)
 
 		require.NoError(t, v.Delete(KeyPair{Key: 999}, cookie))
-		assert.Zero(t, v.writeOffset, "a no-op delete must not append a tombstone")
+		assert.Equal(t, int64(NeedleStartOffset), v.writeOffset, "a no-op delete must not append a tombstone")
 		assert.Empty(t, v.index)
 	})
 
@@ -252,7 +255,7 @@ func TestVolume_Delete(t *testing.T) {
 		tombstone := v.writeOffset
 		require.NoError(t, v.Delete(keyPair, cookie))
 
-		assert.Equal(t, uint64(v.writeOffset), v.deadBytes.Load(),
+		assert.Equal(t, uint64(v.writeOffset-NeedleStartOffset), v.deadBytes.Load(),
 			"after deleting the only needle the whole file is dead")
 		assert.True(t, v.ShouldCompact())
 		assert.Greater(t, v.writeOffset, tombstone)
@@ -265,7 +268,7 @@ func TestVolume_Delete(t *testing.T) {
 		first := v.writeOffset
 		require.NoError(t, v.Write(newNeedle()))
 
-		assert.Equal(t, uint64(first), v.deadBytes.Load(),
+		assert.Equal(t, uint64(first-NeedleStartOffset), v.deadBytes.Load(),
 			"the superseded needle is dead space")
 	})
 }
@@ -283,7 +286,7 @@ func TestVolume_WriteTooLarge(t *testing.T) {
 	err := v.Write(newRandomNeedle(1, xlargeSize+1))
 
 	assert.ErrorIs(t, err, ErrToLarge)
-	assert.Zero(t, v.writeOffset)
+	assert.Equal(t, int64(NeedleStartOffset), v.writeOffset)
 	assert.Empty(t, v.index)
 }
 
@@ -337,4 +340,85 @@ func TestVolume_ReadDoesNotAliasPool(t *testing.T) {
 
 	assert.Equal(t, first, got1, "first read corrupted by second read")
 	assert.Equal(t, second, got2)
+}
+
+func TestVolume_Superblock(t *testing.T) {
+	t.Run("WrittenOnCreate", func(t *testing.T) {
+		v, f := setupTestVolume(t)
+
+		assert.Equal(t, int64(NeedleStartOffset), v.writeOffset)
+
+		header, err := ReadSuperblock(f)
+		require.NoError(t, err)
+
+		assert.Equal(t, uint64(1), header.VolumeID)
+		assert.Equal(t, uint32(FormatVersion), header.FormatVersion)
+		assert.False(t, header.Sealed())
+		assert.Equal(t, header, v.header)
+	})
+
+	t.Run("ReusedOnReopen", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "test.vol")
+
+		f, err := os.Create(path)
+		require.NoError(t, err)
+
+		v, err := NewVolume(f, 7)
+		require.NoError(t, err)
+		require.NoError(t, v.Write(newRandomNeedle(1, 64)))
+		require.NoError(t, f.Close())
+
+		f, err = os.OpenFile(path, os.O_RDWR, 0o600)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = f.Close() })
+
+		reopened, err := NewVolume(f, 999)
+		require.NoError(t, err)
+
+		assert.Equal(t, uint64(7), reopened.header.VolumeID, "volume id comes from the file, not the caller")
+		assert.Equal(t, v.header.CreatedAtUnixNano, reopened.header.CreatedAtUnixNano)
+	})
+
+	t.Run("RejectsCorruptSuperblock", func(t *testing.T) {
+		f := setupTestFile(t)
+
+		_, err := f.WriteAt(make([]byte, SuperblockSize), 0)
+		require.NoError(t, err)
+
+		_, err = NewVolume(f, 1)
+		assert.ErrorIs(t, err, ErrInvalidSuperblock)
+	})
+
+	t.Run("SealIsWrittenAndPersisted", func(t *testing.T) {
+		v, f := setupTestVolume(t)
+
+		require.NoError(t, v.Seal())
+
+		header, err := ReadSuperblock(f)
+		require.NoError(t, err)
+		assert.True(t, header.Sealed())
+		assert.Equal(t, v.header.SealedAtUnixNano, header.SealedAtUnixNano)
+
+		sealedAt := v.header.SealedAtUnixNano
+		require.NoError(t, v.Seal())
+		assert.Equal(t, sealedAt, v.header.SealedAtUnixNano, "sealing twice must not move the timestamp")
+	})
+
+	t.Run("SealedVolumeIsReadOnly", func(t *testing.T) {
+		v, _ := setupTestVolume(t)
+
+		keyPair := KeyPair{Key: 1}
+		require.NoError(t, v.Write(NewNeedle(keyPair.Key, keyPair.AltKey, 42, []byte("live"))))
+		require.NoError(t, v.Seal())
+
+		offset := v.writeOffset
+
+		assert.ErrorIs(t, v.Write(newRandomNeedle(2, 64)), ErrVolumeSealed)
+		assert.ErrorIs(t, v.Delete(keyPair, 42), ErrVolumeSealed)
+		assert.Equal(t, offset, v.writeOffset)
+
+		got, err := v.Read(keyPair, 42)
+		require.NoError(t, err)
+		assert.Equal(t, []byte("live"), got)
+	})
 }

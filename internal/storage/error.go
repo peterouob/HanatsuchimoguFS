@@ -13,5 +13,6 @@ var (
 	ErrInvalidNeedle            = errors.New("invalid needle")
 	ErrToLarge                  = errors.New("too large")
 	ErrInvalidSuperblock        = errors.New("error for invalid superblock")
+	ErrVolumeSealed             = errors.New("error for volume is sealed")
 	ErrUnsupportedFormatVersion = errors.New("error for unsupported format version")
 )

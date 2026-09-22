@@ -7,6 +7,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/peterouob/HanatsuchimoguFS/utils"
 )
@@ -18,6 +19,7 @@ type KeyPair struct {
 
 type Volume struct {
 	dataFile    *os.File
+	header      Superblock
 	index       map[KeyPair]NeedleMeta
 	bufferPool  *BufferPool
 	writeOffset int64
@@ -30,7 +32,7 @@ const compactRatio = 0.6
 
 func (v *Volume) ShouldCompact() bool {
 	v.mu.RLock()
-	total := v.writeOffset
+	total := v.writeOffset - NeedleStartOffset
 	v.mu.RUnlock()
 
 	if total <= 0 {
@@ -50,25 +52,68 @@ var (
 	O          sync.Once
 )
 
-func NewVolume(dataFile *os.File) *Volume {
+func NewVolume(dataFile *os.File, volumeID uint64) (*Volume, error) {
 	O.Do(func() {
 		bufferPool = NewBufferPool()
 		bufferPool.WarnUp()
 	})
 
+	info, err := dataFile.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("new volume: %w", err)
+	}
+
+	var header Superblock
+
+	switch info.Size() {
+	case 0:
+		header = NewSuperblock(volumeID)
+		if err := WriteSuperblock(dataFile, header); err != nil {
+			return nil, err
+		}
+	default:
+		header, err = ReadSuperblock(dataFile)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	v := &Volume{
 		dataFile:    dataFile,
+		header:      header,
 		index:       make(map[KeyPair]NeedleMeta),
-		writeOffset: 0,
+		writeOffset: NeedleStartOffset,
 		bufferPool:  bufferPool,
 	}
 
-	return v
+	return v, nil
+}
+
+func (v *Volume) Seal() error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	if v.header.Sealed() {
+		return nil
+	}
+
+	sealedAt := time.Now().UnixNano()
+
+	if err := SealSuperblock(v.dataFile, sealedAt); err != nil {
+		return err
+	}
+
+	if err := v.dataFile.Sync(); err != nil {
+		return fmt.Errorf("seal volume: %w", err)
+	}
+
+	v.header.SealedAtUnixNano = sealedAt
+
+	return nil
 }
 
 func (v *Volume) Write(n *Needle) error {
-
-	dataSize, err := utils.CIU32(len(n.Data))
+	dataSize, err := utils.CIU[int, uint32](len(n.Data))
 	if err != nil {
 		return err
 	}
@@ -86,6 +131,10 @@ func (v *Volume) Write(n *Needle) error {
 
 	v.mu.Lock()
 	defer v.mu.Unlock()
+
+	if v.header.Sealed() {
+		return ErrVolumeSealed
+	}
 
 	offset := v.writeOffset
 
@@ -167,6 +216,12 @@ func (v *Volume) Reload() {
 
 func (v *Volume) Delete(key KeyPair, cookie uint64) error {
 	v.mu.Lock()
+
+	if v.header.Sealed() {
+		v.mu.Unlock()
+		return ErrVolumeSealed
+	}
+
 	meta, ok := v.index[key]
 
 	if !ok {
@@ -206,5 +261,5 @@ func (v *Volume) Delete(key KeyPair, cookie uint64) error {
 }
 
 func onDiskSize(payload uint32) uint32 {
-	return align8(NeedleHeaderSize + payload + NeedleFooterSize)
+	return (NeedleHeaderSize + payload + NeedleFooterSize + 7) &^ 7
 }
