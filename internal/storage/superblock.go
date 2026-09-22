@@ -113,7 +113,12 @@ func ReadSuperblock(r io.ReaderAt) (Superblock, error) {
 
 func SealSuperblock(w io.WriterAt, sealedAtUnixNano int64) error {
 	var buf [8]byte
-	binary.BigEndian.PutUint64(buf[:], uint64(sealedAtUnixNano))
+	seal, err := utils.CIU[int64, uint64](sealedAtUnixNano)
+	if err != nil {
+		return err
+	}
+
+	binary.BigEndian.PutUint64(buf[:], seal)
 
 	if _, err := w.WriteAt(buf[:], 24); err != nil {
 		return fmt.Errorf("seal superblock: %w", err)
