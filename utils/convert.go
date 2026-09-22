@@ -5,8 +5,7 @@ import (
 )
 
 var (
-	ErrOverflow     = errors.New("convert overflow")
-	ErrNoneNegative = errors.New("convert none negative")
+	ErrOverflow = errors.New("convert overflow")
 )
 
 type NNumber interface {
