@@ -7,6 +7,8 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+
+	"github.com/peterouob/HanatsuchimoguFS/utils"
 )
 
 type KeyPair struct {
@@ -66,7 +68,12 @@ func NewVolume(dataFile *os.File) *Volume {
 
 func (v *Volume) Write(n *Needle) error {
 
-	if n.Header.Size != uint32(len(n.Data)) {
+	dataSize, err := utils.CIU32(len(n.Data))
+	if err != nil {
+		return err
+	}
+
+	if n.Header.Size != dataSize {
 		return ErrInvalidNeedle
 	}
 

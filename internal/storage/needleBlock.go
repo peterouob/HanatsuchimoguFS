@@ -63,13 +63,18 @@ func NewNeedle(key uint64, altKey uint32, cookie uint64, data []byte, flag ...by
 		f = flag[0]
 	}
 
+	dataSize, err := utils.CIU32(len(data))
+	if err != nil {
+		panic(err) // TODO: need to handle this error
+	}
+
 	return &Needle{
 		Header: NeedleHeader{
 			Cookie:       cookie,
 			Key:          key,
 			AlternateKey: altKey,
 			MagicHeader:  MagicHeader,
-			Size:         uint32(len(data)),
+			Size:         dataSize,
 			Flag:         f,
 		},
 		Data:   data,
