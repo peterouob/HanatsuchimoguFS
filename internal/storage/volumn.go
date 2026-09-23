@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"bufio"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -258,6 +260,80 @@ func (v *Volume) Delete(key KeyPair, cookie uint64) error {
 	v.deadBytes.Add(uint64(onDiskSize(meta.Size)) + uint64(onDiskSize(0)))
 
 	return nil
+}
+
+func (v *Volume) scan(fn func(off int64, h NeedleHeader, data []byte) error) (end int64, err error) {
+	info, err := v.dataFile.Stat()
+	if err != nil {
+		return 0, fmt.Errorf("get file state error: %w", err)
+	}
+
+	size := info.Size()
+	section := io.NewSectionReader(v.dataFile, NeedleStartOffset, size-NeedleStartOffset)
+	r := bufio.NewReaderSize(section, 1<<20)
+	offset := int64(NeedleStartOffset)
+	buf := make([]byte, largeSize)
+
+	for {
+		if _, err := io.ReadFull(r, buf[:NeedleHeaderSize]); err != nil {
+			switch {
+			case err == io.EOF, errors.Is(err, io.ErrUnexpectedEOF):
+				return offset, nil
+			default:
+				return offset, fmt.Errorf("read header error: %w", err)
+			}
+		}
+
+		if binary.BigEndian.Uint32(buf[:4]) != MagicHeader {
+			return offset, nil
+		}
+
+		if flag := buf[24]; flag != NormalByte && flag != DeleteByte && flag != TombstoneByte {
+			return offset, nil
+		}
+
+		if binary.BigEndian.Uint32(buf[25:29]) > maxPayload {
+			return offset, nil
+		}
+
+		total, err := utils.CUI[uint32, int](onDiskSize(binary.BigEndian.Uint32(buf[25:29])))
+		if err != nil {
+			return offset, err
+		}
+
+		if cap(buf) < total {
+			buf = append(buf[:NeedleHeaderSize], make([]byte, total-NeedleHeaderSize)...)
+		}
+		buf = buf[:total]
+
+		if _, err := io.ReadFull(r, buf[NeedleHeaderSize:]); err != nil {
+			switch {
+			case err == io.EOF, errors.Is(err, io.ErrUnexpectedEOF):
+				return offset, nil
+			default:
+				return offset, fmt.Errorf("read data error: %w", err)
+			}
+		}
+
+		n := ParseNeedle(buf)
+		dataEnd := NeedleHeaderSize + n.Header.Size
+
+		if _, err := GetNeedleBlockInfo(dataEnd+NeedleFooterSize, n.Header.Size, buf); err != nil {
+			return offset, nil
+		}
+
+		for _, b := range buf[dataEnd+NeedleFooterSize:] {
+			if b != 0 {
+				return offset, nil
+			}
+		}
+
+		if err := fn(offset, n.Header, n.Data); err != nil {
+			return offset, err
+		}
+
+		offset += int64(total)
+	}
 }
 
 func onDiskSize(payload uint32) uint32 {

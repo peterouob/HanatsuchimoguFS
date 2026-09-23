@@ -56,6 +56,8 @@ type NeedleFooter struct {
 const (
 	NeedleHeaderSize = 29
 	NeedleFooterSize = 8
+
+	maxPayload = xlargeSize - NeedleHeaderSize - NeedleFooterSize
 )
 
 func NewNeedle(key uint64, altKey uint32, cookie uint64, data []byte, flag ...byte) *Needle {

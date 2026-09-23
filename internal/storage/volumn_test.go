@@ -2,6 +2,7 @@ package storage
 
 import (
 	"bytes"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"testing"
@@ -405,5 +406,157 @@ func TestVolume_Superblock(t *testing.T) {
 		got, err := v.Read(keyPair, 42)
 		require.NoError(t, err)
 		assert.Equal(t, []byte("live"), got)
+	})
+}
+
+func TestVolume_Scan(t *testing.T) {
+	t.Run("Empty", func(t *testing.T) {
+		v, _ := SetupTestVolume(t)
+
+		calls := 0
+
+		end, calls := runScan(t, v)
+		assert.Equal(t, 1, calls)
+		assert.Equal(t, int64(NeedleStartOffset), end)
+		assert.Equal(t, 0, calls)
+	})
+
+	t.Run("AllNeedles", func(t *testing.T) {
+		v, _ := SetupTestVolume(t)
+
+		payloads := [][]byte{[]byte("a"), make([]byte, 4096), make([]byte, 2*1024*1024)}
+		var offsets []int64
+		for i, p := range payloads {
+			require.NoError(t, v.Write(NewNeedle(uint64(i), 0, 1, p)))
+			offsets = append(offsets, v.index[KeyPair{Key: uint64(i)}].Offset)
+		}
+
+		var got []int64
+		end, calls := runScan(t, v)
+		assert.Equal(t, 1, calls)
+		assert.Equal(t, offsets, got)
+		assert.Equal(t, v.writeOffset, end)
+	})
+
+	t.Run("TruncatedTail", func(t *testing.T) {
+		for _, cut := range []int64{1, 8, 20, 30} {
+			v, f := SetupTestVolume(t)
+			require.NoError(t, v.Write(NewNeedle(1, 0, 1, []byte("first"))))
+			first := v.writeOffset
+			require.NoError(t, v.Write(NewNeedle(2, 0, 1, []byte("second"))))
+
+			require.NoError(t, f.Truncate(v.writeOffset-cut))
+
+			calls := 0
+			end, calls := runScan(t, v)
+			assert.Equal(t, 1, calls)
+			assert.Equal(t, first, end, "cut %d", cut)
+			assert.Equal(t, 1, calls, "cut %d", cut)
+		}
+	})
+
+	t.Run("CorruptData", func(t *testing.T) {
+		v, f := SetupTestVolume(t)
+		require.NoError(t, v.Write(NewNeedle(1, 0, 1, []byte("first"))))
+		second := v.writeOffset
+		require.NoError(t, v.Write(NewNeedle(2, 0, 1, []byte("second"))))
+		require.NoError(t, v.Write(NewNeedle(3, 0, 1, []byte("third"))))
+
+		_, err := f.WriteAt([]byte{'X'}, second+NeedleHeaderSize)
+		require.NoError(t, err)
+
+		end, calls := runScan(t, v)
+		assert.Equal(t, 1, calls)
+		assert.Equal(t, second, end)
+	})
+
+	t.Run("CorruptSize", func(t *testing.T) {
+		v, f := SetupTestVolume(t)
+		require.NoError(t, v.Write(NewNeedle(1, 0, 1, []byte("first"))))
+
+		_, err := f.WriteAt([]byte{0xFF, 0xFF, 0xFF, 0xFF}, NeedleStartOffset+25)
+		require.NoError(t, err)
+
+		end, calls := runScan(t, v)
+		assert.Equal(t, 1, calls)
+		assert.Equal(t, int64(NeedleStartOffset), end)
+	})
+
+	t.Run("DeletedNeedle", func(t *testing.T) {
+		v, _ := SetupTestVolume(t)
+		require.NoError(t, v.Write(NewNeedle(1, 0, 1, []byte("first"))))
+		require.NoError(t, v.Delete(KeyPair{Key: 1}, 1))
+
+		var flags []byte
+
+		end, calls := runScan(t, v)
+		assert.Equal(t, 1, calls)
+
+		assert.Equal(t, v.writeOffset, end)
+		assert.Len(t, flags, 2)
+	})
+
+	t.Run("CorruptSize", func(t *testing.T) {
+		cases := []struct {
+			name  string
+			write func(size uint32) uint32
+		}{
+			{"Huge", func(uint32) uint32 { return 0xFFFFFFFF }},
+			{"Shrunk", func(s uint32) uint32 { return s - 4 }},
+			{"Grown", func(s uint32) uint32 { return s + 4 }},
+			{"Zero", func(uint32) uint32 { return 0 }},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				v, f, second, _ := setupThree(t)
+
+				var buf [4]byte
+				binary.BigEndian.PutUint32(buf[:], tc.write(uint32(len("second"))))
+				poke(t, f, second+NeedleHeaderSize, buf[:]...)
+
+				end, calls := runScan(t, v)
+				assert.Equal(t, second, end)
+				assert.Equal(t, 1, calls)
+			})
+		}
+	})
+
+	t.Run("BadHeaderMagic", func(t *testing.T) {
+		v, f, second, _ := setupThree(t)
+		poke(t, f, second+4, 0xDE, 0xAD, 0xBE, 0xEF)
+
+		end, calls := runScan(t, v)
+		assert.Equal(t, second, end)
+		assert.Equal(t, 1, calls)
+	})
+
+	t.Run("ZeroTail", func(t *testing.T) {
+		v, f := SetupTestVolume(t)
+		require.NoError(t, v.Write(NewNeedle(1, 0, 1, []byte("first"))))
+		want := v.writeOffset
+		require.NoError(t, f.Truncate(want+4096))
+
+		end, calls := runScan(t, v)
+		assert.Equal(t, want, end)
+		assert.Equal(t, 1, calls)
+	})
+
+	t.Run("BadFlag", func(t *testing.T) {
+		v, f, second, _ := setupThree(t)
+		poke(t, f, second+1, 0x7F)
+
+		end, calls := runScan(t, v)
+		assert.Equal(t, second, end)
+		assert.Equal(t, 1, calls)
+	})
+
+	t.Run("BadPadding", func(t *testing.T) {
+		v, f, second, third := setupThree(t)
+		poke(t, f, third-1, 0x01)
+
+		end, calls := runScan(t, v)
+		assert.Equal(t, second, end)
+		assert.Equal(t, 1, calls)
 	})
 }
