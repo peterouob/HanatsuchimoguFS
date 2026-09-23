@@ -413,10 +413,7 @@ func TestVolume_Scan(t *testing.T) {
 	t.Run("Empty", func(t *testing.T) {
 		v, _ := SetupTestVolume(t)
 
-		calls := 0
-
 		end, calls := runScan(t, v)
-		assert.Equal(t, 1, calls)
 		assert.Equal(t, int64(NeedleStartOffset), end)
 		assert.Equal(t, 0, calls)
 	})
@@ -432,8 +429,11 @@ func TestVolume_Scan(t *testing.T) {
 		}
 
 		var got []int64
-		end, calls := runScan(t, v)
-		assert.Equal(t, 1, calls)
+		end, err := v.scan(func(off int64, _ NeedleHeader, _ []byte) error {
+			got = append(got, off)
+			return nil
+		})
+		require.NoError(t, err)
 		assert.Equal(t, offsets, got)
 		assert.Equal(t, v.writeOffset, end)
 	})
@@ -447,9 +447,7 @@ func TestVolume_Scan(t *testing.T) {
 
 			require.NoError(t, f.Truncate(v.writeOffset-cut))
 
-			calls := 0
 			end, calls := runScan(t, v)
-			assert.Equal(t, 1, calls)
 			assert.Equal(t, first, end, "cut %d", cut)
 			assert.Equal(t, 1, calls, "cut %d", cut)
 		}
@@ -470,7 +468,7 @@ func TestVolume_Scan(t *testing.T) {
 		assert.Equal(t, second, end)
 	})
 
-	t.Run("CorruptSize", func(t *testing.T) {
+	t.Run("CorruptFirstSize", func(t *testing.T) {
 		v, f := SetupTestVolume(t)
 		require.NoError(t, v.Write(NewNeedle(1, 0, 1, []byte("first"))))
 
@@ -478,7 +476,7 @@ func TestVolume_Scan(t *testing.T) {
 		require.NoError(t, err)
 
 		end, calls := runScan(t, v)
-		assert.Equal(t, 1, calls)
+		assert.Equal(t, 0, calls)
 		assert.Equal(t, int64(NeedleStartOffset), end)
 	})
 
@@ -488,12 +486,13 @@ func TestVolume_Scan(t *testing.T) {
 		require.NoError(t, v.Delete(KeyPair{Key: 1}, 1))
 
 		var flags []byte
-
-		end, calls := runScan(t, v)
-		assert.Equal(t, 1, calls)
-
+		end, err := v.scan(func(_ int64, h NeedleHeader, _ []byte) error {
+			flags = append(flags, h.Flag)
+			return nil
+		})
+		require.NoError(t, err)
 		assert.Equal(t, v.writeOffset, end)
-		assert.Len(t, flags, 2)
+		assert.Equal(t, []byte{NormalByte, DeleteByte}, flags)
 	})
 
 	t.Run("CorruptSize", func(t *testing.T) {
