@@ -15,4 +15,5 @@ var (
 	ErrInvalidSuperblock        = errors.New("error for invalid superblock")
 	ErrVolumeSealed             = errors.New("error for volume is sealed")
 	ErrUnsupportedFormatVersion = errors.New("error for unsupported format version")
+	ErrCorruptVolume            = errors.New("error for corrupt volume")
 )

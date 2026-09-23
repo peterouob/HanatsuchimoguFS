@@ -49,3 +49,11 @@ func setupThree(t *testing.T) (*Volume, *os.File, int64, int64) {
 	require.NoError(t, v.Write(NewNeedle(3, 0, 1, []byte("third"))))
 	return v, f, second, third
 }
+
+func reopen(t *testing.T, f *os.File) *Volume {
+	t.Helper()
+	v, err := NewVolume(f, 1)
+	require.NoError(t, err)
+	require.NoError(t, v.Reload())
+	return v
+}

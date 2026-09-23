@@ -185,8 +185,8 @@ func TestVolume_Delete(t *testing.T) {
 
 		assert.Greater(t, v.writeOffset, liveOffset, "tombstone must advance the write offset")
 
-		// header(29) + no data + footer(8) = 37, padded to 40
-		assert.Equal(t, liveOffset+40, v.writeOffset)
+		// header(29) + offset(8) + footer(8) = 45, padded to 48
+		assert.Equal(t, liveOffset+48, v.writeOffset)
 
 		tombstone := make([]byte, v.writeOffset-liveOffset)
 		_, err := f.ReadAt(tombstone, liveOffset)
@@ -439,7 +439,7 @@ func TestVolume_Scan(t *testing.T) {
 	})
 
 	t.Run("TruncatedTail", func(t *testing.T) {
-		for _, cut := range []int64{1, 8, 20, 30} {
+		for _, cut := range []int64{1, 8, 16, 18, 19, 20, 30} {
 			v, f := SetupTestVolume(t)
 			require.NoError(t, v.Write(NewNeedle(1, 0, 1, []byte("first"))))
 			first := v.writeOffset
@@ -492,7 +492,7 @@ func TestVolume_Scan(t *testing.T) {
 		})
 		require.NoError(t, err)
 		assert.Equal(t, v.writeOffset, end)
-		assert.Equal(t, []byte{NormalByte, DeleteByte}, flags)
+		assert.Equal(t, []byte{DeleteByte, TombstoneByte}, flags)
 	})
 
 	t.Run("CorruptSize", func(t *testing.T) {
@@ -512,7 +512,7 @@ func TestVolume_Scan(t *testing.T) {
 
 				var buf [4]byte
 				binary.BigEndian.PutUint32(buf[:], tc.write(uint32(len("second"))))
-				poke(t, f, second+NeedleHeaderSize, buf[:]...)
+				poke(t, f, second+25, buf[:]...)
 
 				end, calls := runScan(t, v)
 				assert.Equal(t, second, end)
@@ -557,5 +557,118 @@ func TestVolume_Scan(t *testing.T) {
 		end, calls := runScan(t, v)
 		assert.Equal(t, second, end)
 		assert.Equal(t, 1, calls)
+	})
+}
+
+func TestVolume_Reload(t *testing.T) {
+	const cookie = uint64(1)
+
+	t.Run("RebuildsIndex", func(t *testing.T) {
+		v, f := SetupTestVolume(t)
+		require.NoError(t, v.Write(NewNeedle(1, 0, cookie, []byte("one"))))
+		require.NoError(t, v.Write(NewNeedle(2, 0, cookie, []byte("two"))))
+		require.NoError(t, v.Write(NewNeedle(2, 0, cookie, []byte("two-v2"))))
+
+		r := reopen(t, f)
+
+		assert.Equal(t, v.index, r.index)
+		assert.Equal(t, v.writeOffset, r.writeOffset)
+		assert.Equal(t, v.deadBytes.Load(), r.deadBytes.Load())
+
+		got, err := r.Read(KeyPair{Key: 2}, cookie)
+		require.NoError(t, err)
+		assert.Equal(t, []byte("two-v2"), got)
+	})
+
+	t.Run("EmptyVolume", func(t *testing.T) {
+		_, f := SetupTestVolume(t)
+
+		r := reopen(t, f)
+
+		assert.Empty(t, r.index)
+		assert.Equal(t, int64(NeedleStartOffset), r.writeOffset)
+	})
+
+	t.Run("TruncatesTornTail", func(t *testing.T) {
+		v, f := SetupTestVolume(t)
+		require.NoError(t, v.Write(NewNeedle(1, 0, cookie, []byte("one"))))
+		end := v.writeOffset
+		poke(t, f, end, 0xDE, 0xAD, 0xBE, 0xEF)
+
+		r := reopen(t, f)
+
+		assert.Equal(t, end, r.writeOffset)
+		info, err := f.Stat()
+		require.NoError(t, err)
+		assert.Equal(t, end, info.Size())
+
+		require.NoError(t, r.Write(NewNeedle(2, 0, cookie, []byte("two"))))
+		got, err := r.Read(KeyPair{Key: 2}, cookie)
+		require.NoError(t, err)
+		assert.Equal(t, []byte("two"), got)
+	})
+
+	t.Run("SealedTornTailIsCorrupt", func(t *testing.T) {
+		v, f := SetupTestVolume(t)
+		require.NoError(t, v.Write(NewNeedle(1, 0, cookie, []byte("one"))))
+		require.NoError(t, v.Seal())
+		poke(t, f, v.writeOffset, 0xDE, 0xAD)
+
+		r, err := NewVolume(f, 1)
+		require.NoError(t, err)
+		assert.ErrorIs(t, r.Reload(), ErrCorruptVolume)
+	})
+}
+
+func TestVolume_ReloadWithDelete(t *testing.T) {
+	const cookie = uint64(1)
+
+	t.Run("DeletedKeyStaysDeleted", func(t *testing.T) {
+		v, f := SetupTestVolume(t)
+		require.NoError(t, v.Write(NewNeedle(1, 0, cookie, []byte("one"))))
+		require.NoError(t, v.Write(NewNeedle(2, 0, cookie, []byte("two"))))
+		require.NoError(t, v.Delete(KeyPair{Key: 1}, cookie))
+
+		r := reopen(t, f)
+
+		assert.NotContains(t, r.index, KeyPair{Key: 1})
+		assert.Equal(t, v.index, r.index)
+		assert.Equal(t, v.writeOffset, r.writeOffset)
+		assert.Equal(t, v.deadBytes.Load(), r.deadBytes.Load())
+
+		got, err := r.Read(KeyPair{Key: 2}, cookie)
+		require.NoError(t, err)
+		assert.Equal(t, []byte("two"), got)
+	})
+
+	t.Run("CrashBeforeFlagFlip", func(t *testing.T) {
+		v, f := SetupTestVolume(t)
+		require.NoError(t, v.Write(NewNeedle(1, 0, cookie, []byte("one"))))
+		victim := v.index[KeyPair{Key: 1}].Offset
+		require.NoError(t, v.Delete(KeyPair{Key: 1}, cookie))
+		poke(t, f, victim+24, NormalByte)
+
+		r := reopen(t, f)
+
+		assert.NotContains(t, r.index, KeyPair{Key: 1})
+		assert.Equal(t, v.deadBytes.Load(), r.deadBytes.Load())
+
+		flag := make([]byte, 1)
+		_, err := f.ReadAt(flag, victim+24)
+		require.NoError(t, err)
+		assert.Equal(t, DeleteByte, flag[0])
+
+		r2 := reopen(t, f)
+		assert.Equal(t, r.index, r2.index)
+	})
+
+	t.Run("ReopenUseOldKey", func(t *testing.T) {
+		v, f := SetupTestVolume(t)
+		require.NoError(t, v.Write(NewNeedle(1, 0, cookie, []byte("one"))))
+		r := reopen(t, f)
+		require.NoError(t, r.Write(NewNeedle(2, 0, cookie, []byte("two"))))
+		got, err := r.Read(KeyPair{Key: 1}, cookie)
+		require.NoError(t, err)
+		assert.Equal(t, []byte("one"), got)
 	})
 }
