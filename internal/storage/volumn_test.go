@@ -11,7 +11,7 @@ import (
 )
 
 func TestWrite(t *testing.T) {
-	volume, _ := setupTestVolume(t)
+	volume, _ := SetupTestVolume(t)
 
 	needle := NewNeedle(1, 100, 12345, make([]byte, 4096))
 
@@ -36,21 +36,6 @@ func TestWrite(t *testing.T) {
 	assert.Equal(t, int64(NeedleStartOffset)+expectedTotalSize*2, volume.writeOffset, "Final write offset incorrect")
 }
 
-func setupTestVolume(tb testing.TB) (*Volume, *os.File) {
-	tb.Helper()
-	vPath := filepath.Join(tb.TempDir(), "test.vol")
-
-	f, err := os.Create(vPath)
-	require.NoError(tb, err)
-
-	tb.Cleanup(func() { _ = f.Close() })
-
-	v, err := NewVolume(f, 1)
-	require.NoError(tb, err)
-
-	return v, f
-}
-
 func TestVolume_Read(t *testing.T) {
 	payload := []byte("hello world data")
 	keyVal := uint64(100)
@@ -62,7 +47,7 @@ func TestVolume_Read(t *testing.T) {
 	needle := NewNeedle(keyVal, altKeyVal, cookieVal, payload)
 
 	t.Run("Success_HappyPath", func(t *testing.T) {
-		v, _ := setupTestVolume(t)
+		v, _ := SetupTestVolume(t)
 
 		err := v.Write(needle)
 		require.NoError(t, err)
@@ -73,7 +58,7 @@ func TestVolume_Read(t *testing.T) {
 	})
 
 	t.Run("Error_KeyNotFound", func(t *testing.T) {
-		v, _ := setupTestVolume(t)
+		v, _ := SetupTestVolume(t)
 
 		wrongKey := KeyPair{Key: 99999, AltKey: 0}
 		_, err := v.Read(wrongKey, cookieVal)
@@ -83,7 +68,7 @@ func TestVolume_Read(t *testing.T) {
 	})
 
 	t.Run("Error_InvalidCookie", func(t *testing.T) {
-		v, _ := setupTestVolume(t)
+		v, _ := SetupTestVolume(t)
 
 		err := v.Write(needle)
 		require.NoError(t, err)
@@ -96,7 +81,7 @@ func TestVolume_Read(t *testing.T) {
 	})
 
 	t.Run("Error_DataDeleted", func(t *testing.T) {
-		v, f := setupTestVolume(t)
+		v, f := SetupTestVolume(t)
 
 		err := v.Write(needle)
 		require.NoError(t, err)
@@ -115,7 +100,7 @@ func TestVolume_Read(t *testing.T) {
 	})
 
 	t.Run("Error_MagicHeaderMismatch", func(t *testing.T) {
-		v, f := setupTestVolume(t)
+		v, f := SetupTestVolume(t)
 
 		err := v.Write(needle)
 		require.NoError(t, err)
@@ -133,7 +118,7 @@ func TestVolume_Read(t *testing.T) {
 	})
 
 	t.Run("Error_CRC_Mismatch", func(t *testing.T) {
-		v, f := setupTestVolume(t)
+		v, f := SetupTestVolume(t)
 
 		err := v.Write(needle)
 		require.NoError(t, err)
@@ -171,7 +156,7 @@ func TestVolume_Delete(t *testing.T) {
 	}
 
 	t.Run("MissingKeyIsNoOp", func(t *testing.T) {
-		v, _ := setupTestVolume(t)
+		v, _ := SetupTestVolume(t)
 
 		require.NoError(t, v.Delete(KeyPair{Key: 999}, cookie))
 		assert.Equal(t, int64(NeedleStartOffset), v.writeOffset, "a no-op delete must not append a tombstone")
@@ -179,7 +164,7 @@ func TestVolume_Delete(t *testing.T) {
 	})
 
 	t.Run("RemovesFromIndex", func(t *testing.T) {
-		v, _ := setupTestVolume(t)
+		v, _ := SetupTestVolume(t)
 		require.NoError(t, v.Write(newNeedle()))
 
 		require.NoError(t, v.Delete(keyPair, cookie))
@@ -191,7 +176,7 @@ func TestVolume_Delete(t *testing.T) {
 	})
 
 	t.Run("AppendsTombstone", func(t *testing.T) {
-		v, f := setupTestVolume(t)
+		v, f := SetupTestVolume(t)
 		require.NoError(t, v.Write(newNeedle()))
 
 		liveOffset := v.writeOffset
@@ -210,7 +195,7 @@ func TestVolume_Delete(t *testing.T) {
 	})
 
 	t.Run("DeleteTwiceIsNoOp", func(t *testing.T) {
-		v, _ := setupTestVolume(t)
+		v, _ := SetupTestVolume(t)
 		require.NoError(t, v.Write(newNeedle()))
 		require.NoError(t, v.Delete(keyPair, cookie))
 
@@ -221,7 +206,7 @@ func TestVolume_Delete(t *testing.T) {
 	})
 
 	t.Run("RewriteAfterDelete", func(t *testing.T) {
-		v, _ := setupTestVolume(t)
+		v, _ := SetupTestVolume(t)
 		require.NoError(t, v.Write(newNeedle()))
 		require.NoError(t, v.Delete(keyPair, cookie))
 		require.NoError(t, v.Write(newNeedle()))
@@ -232,7 +217,7 @@ func TestVolume_Delete(t *testing.T) {
 	})
 
 	t.Run("AppendOnly_NeverReusesFreedSpace", func(t *testing.T) {
-		v, _ := setupTestVolume(t)
+		v, _ := SetupTestVolume(t)
 		require.NoError(t, v.Write(newNeedle()))
 
 		freedOffset := v.index[keyPair].Offset
@@ -249,7 +234,7 @@ func TestVolume_Delete(t *testing.T) {
 	})
 
 	t.Run("DeleteAccountsDeadBytes", func(t *testing.T) {
-		v, _ := setupTestVolume(t)
+		v, _ := SetupTestVolume(t)
 		require.NoError(t, v.Write(newNeedle()))
 
 		tombstone := v.writeOffset
@@ -262,7 +247,7 @@ func TestVolume_Delete(t *testing.T) {
 	})
 
 	t.Run("OverwriteAccountsDeadBytes", func(t *testing.T) {
-		v, _ := setupTestVolume(t)
+		v, _ := SetupTestVolume(t)
 		require.NoError(t, v.Write(newNeedle()))
 
 		first := v.writeOffset
@@ -274,14 +259,14 @@ func TestVolume_Delete(t *testing.T) {
 }
 
 func TestVolume_Sync(t *testing.T) {
-	v, _ := setupTestVolume(t)
+	v, _ := SetupTestVolume(t)
 
 	require.NoError(t, v.Write(newRandomNeedle(1, 64)))
 	assert.NoError(t, v.Sync())
 }
 
 func TestVolume_WriteTooLarge(t *testing.T) {
-	v, _ := setupTestVolume(t)
+	v, _ := SetupTestVolume(t)
 
 	err := v.Write(newRandomNeedle(1, xlargeSize+1))
 
@@ -309,7 +294,7 @@ func TestSizeConsistency(t *testing.T) {
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				v, _ := setupTestVolume(t)
+				v, _ := SetupTestVolume(t)
 				before := v.writeOffset
 
 				err := v.Write(makeNeedle(1, tc.headerSize, tc.dataLen))
@@ -324,7 +309,7 @@ func TestSizeConsistency(t *testing.T) {
 }
 
 func TestVolume_ReadDoesNotAliasPool(t *testing.T) {
-	volume, _ := setupTestVolume(t)
+	volume, _ := SetupTestVolume(t)
 
 	first := bytes.Repeat([]byte("A"), 512)
 	second := bytes.Repeat([]byte("B"), 512)
@@ -344,7 +329,7 @@ func TestVolume_ReadDoesNotAliasPool(t *testing.T) {
 
 func TestVolume_Superblock(t *testing.T) {
 	t.Run("WrittenOnCreate", func(t *testing.T) {
-		v, f := setupTestVolume(t)
+		v, f := SetupTestVolume(t)
 
 		assert.Equal(t, int64(NeedleStartOffset), v.writeOffset)
 
@@ -390,7 +375,7 @@ func TestVolume_Superblock(t *testing.T) {
 	})
 
 	t.Run("SealIsWrittenAndPersisted", func(t *testing.T) {
-		v, f := setupTestVolume(t)
+		v, f := SetupTestVolume(t)
 
 		require.NoError(t, v.Seal())
 
@@ -405,7 +390,7 @@ func TestVolume_Superblock(t *testing.T) {
 	})
 
 	t.Run("SealedVolumeIsReadOnly", func(t *testing.T) {
-		v, _ := setupTestVolume(t)
+		v, _ := SetupTestVolume(t)
 
 		keyPair := KeyPair{Key: 1}
 		require.NoError(t, v.Write(NewNeedle(keyPair.Key, keyPair.AltKey, 42, []byte("live"))))
