@@ -89,7 +89,7 @@ func TestValidNeedleBlock(t *testing.T) {
 		{"Valid", func([]byte) {}, cookie, nil},
 		{"BadMagicHeader", func(b []byte) { binary.BigEndian.PutUint32(b[0:4], 0) }, cookie, ErrMagicNumber},
 		{"BadCookie", func([]byte) {}, cookie + 1, ErrCookie},
-		{"Deleted", func(b []byte) { b[24] = DeleteByte }, cookie, ErrDataDeleted},
+		{"Deleted", func(b []byte) { b[24] = DeleteByte }, cookie, ErrDataNotNormal},
 	}
 
 	for _, tt := range tests {
@@ -139,4 +139,15 @@ func TestNeedle_CRCIgnoresFlag(t *testing.T) {
 	assert.Equal(t, crc, NewCRC(buf.B[:NeedleHeaderSize], payload).Value())
 	_, err = GetNeedleBlockInfo(totalSize, uint32(len(payload)), buf.B)
 	assert.NoError(t, err)
+}
+
+func TestNeedle_ParseNeedleBlockInfo(t *testing.T) {
+	payload := []byte("payload")
+	needle := NewNeedle(1, 2, 3, payload)
+	buf, err := needle.Bytes(NewBufferPool())
+	require.NoError(t, err)
+	parse := ParseNeedle(buf.B)
+	assert.Equal(t, needle.Header, parse.Header)
+	assert.Equal(t, needle.Footer, parse.Footer)
+	assert.Equal(t, needle.Data, parse.Data)
 }

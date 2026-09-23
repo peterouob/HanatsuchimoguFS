@@ -111,7 +111,7 @@ func TestVolume_Read(t *testing.T) {
 		_, err = v.Read(keyPair, cookieVal)
 
 		assert.Error(t, err)
-		assert.ErrorIs(t, err, ErrDataDeleted)
+		assert.ErrorIs(t, err, ErrDataNotNormal)
 	})
 
 	t.Run("Error_MagicHeaderMismatch", func(t *testing.T) {
@@ -206,7 +206,7 @@ func TestVolume_Delete(t *testing.T) {
 		_, err := f.ReadAt(tombstone, liveOffset)
 		require.NoError(t, err)
 
-		assert.ErrorIs(t, ValidNeedleBlock(tombstone, cookie), ErrDataDeleted)
+		assert.ErrorIs(t, ValidNeedleBlock(tombstone, cookie), ErrDataNotNormal)
 	})
 
 	t.Run("DeleteTwiceIsNoOp", func(t *testing.T) {

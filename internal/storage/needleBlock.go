@@ -15,6 +15,7 @@ const (
 const (
 	NormalByte byte = iota
 	DeleteByte
+	TombstoneByte
 )
 
 /*
@@ -132,8 +133,8 @@ func ValidNeedleBlock(buf []byte, cookie uint64) error {
 		return ErrCookie
 	}
 
-	if buf[24] == DeleteByte {
-		return ErrDataDeleted
+	if buf[24] != NormalByte {
+		return ErrDataNotNormal
 	}
 
 	return nil
@@ -154,4 +155,36 @@ func GetNeedleBlockInfo(totalSize, metaSize uint32, buf []byte) ([]byte, error) 
 	}
 
 	return data, nil
+}
+
+func ParseNeedle(buf []byte) *Needle {
+	if len(buf) < NeedleHeaderSize+NeedleFooterSize {
+		panic(ErrBufferTooSmall)
+	}
+
+	size, err := utils.CUI[uint32, int](binary.BigEndian.Uint32(buf[25:29]))
+	if err != nil {
+		panic(err)
+	}
+
+	end := NeedleHeaderSize + size
+	if len(buf) < end+NeedleFooterSize {
+		panic(ErrBufferTooSmall)
+	}
+
+	return &Needle{
+		Header: NeedleHeader{
+			MagicHeader:  binary.BigEndian.Uint32(buf[0:4]),
+			Cookie:       binary.BigEndian.Uint64(buf[4:12]),
+			Key:          binary.BigEndian.Uint64(buf[12:20]),
+			AlternateKey: binary.BigEndian.Uint32(buf[20:24]),
+			Flag:         buf[24],
+			Size:         binary.BigEndian.Uint32(buf[25:29]),
+		},
+		Data: buf[NeedleHeaderSize:end],
+		Footer: NeedleFooter{
+			Checksum:    binary.BigEndian.Uint32(buf[end : end+4]),
+			MagicFooter: binary.BigEndian.Uint32(buf[end+4 : end+8]),
+		},
+	}
 }
