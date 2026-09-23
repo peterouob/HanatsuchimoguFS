@@ -8,8 +8,11 @@ const CRCMagic = 0xa282ead8
 
 type CRC uint32
 
-func NewCRC(b []byte) CRC {
-	return CRC(0).Update(b)
+func NewCRC(header, data []byte) CRC {
+	return CRC(0).
+		Update(header[:24]).
+		Update(header[24+1:]).
+		Update(data)
 }
 
 func (c CRC) Update(b []byte) CRC {

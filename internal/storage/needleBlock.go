@@ -104,7 +104,7 @@ func (n *Needle) Bytes(bp *BufferPool) (*Buffer, error) {
 
 	buf.B = append(buf.B, n.Data...)
 
-	n.Footer.Checksum = NewCRC(buf.B).Value()
+	n.Footer.Checksum = NewCRC(buf.B[:NeedleHeaderSize], n.Data).Value()
 	buf.B = binary.BigEndian.AppendUint32(buf.B, n.Footer.Checksum)
 	buf.B = binary.BigEndian.AppendUint32(buf.B, n.Footer.MagicFooter)
 
@@ -140,19 +140,18 @@ func ValidNeedleBlock(buf []byte, cookie uint64) error {
 }
 
 func GetNeedleBlockInfo(totalSize, metaSize uint32, buf []byte) ([]byte, error) {
-	dataWithHeader := buf[:NeedleHeaderSize+metaSize]
+	header := buf[:NeedleHeaderSize]
+	data := buf[NeedleHeaderSize : NeedleHeaderSize+metaSize]
 	footer := buf[totalSize-NeedleFooterSize:]
 	crc := binary.BigEndian.Uint32(footer[0:4])
 
-	if NewCRC(dataWithHeader).Value() != crc {
+	if NewCRC(header, data).Value() != crc {
 		return nil, ErrCrcNotValid
 	}
 
 	if binary.BigEndian.Uint32(footer[4:8]) != MagicFooter {
 		return nil, ErrInvalidMagicFooter
 	}
-
-	data := dataWithHeader[NeedleHeaderSize : NeedleHeaderSize+metaSize]
 
 	return data, nil
 }

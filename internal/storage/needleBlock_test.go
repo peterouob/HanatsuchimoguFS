@@ -48,7 +48,7 @@ func TestNeedle_Bytes(t *testing.T) {
 	assert.Equal(t, data, dataPayload)
 
 	crc := binary.BigEndian.Uint32(getBytes[29+len(dataPayload) : 29+len(dataPayload)+4])
-	expectCRC := NewCRC(getBytes[:29+len(dataPayload)]).Value()
+	expectCRC := NewCRC(getBytes[:29], getBytes[29:29+len(dataPayload)]).Value()
 	assert.Equal(t, expectCRC, crc, "footer checksum must cover header+data")
 	assert.Equal(t, expectCRC, needle.Footer.Checksum, "Bytes() must publish the checksum it wrote")
 
@@ -124,4 +124,19 @@ func TestGetNeedleBlockInfo_BadMagicFooter(t *testing.T) {
 
 	_, err = GetNeedleBlockInfo(totalSize, uint32(len(payload)), buf.B)
 	assert.ErrorIs(t, err, ErrInvalidMagicFooter)
+}
+
+func TestNeedle_CRCIgnoresFlag(t *testing.T) {
+	payload := []byte("flag change")
+	buf, err := NewNeedle(1, 2, 3, payload).Bytes(NewBufferPool())
+	require.NoError(t, err)
+
+	totalSize := uint32(NeedleHeaderSize + len(payload) + NeedleFooterSize)
+	crc := binary.BigEndian.Uint32(buf.B[NeedleHeaderSize+len(payload):])
+
+	buf.B[24] = DeleteByte
+
+	assert.Equal(t, crc, NewCRC(buf.B[:NeedleHeaderSize], payload).Value())
+	_, err = GetNeedleBlockInfo(totalSize, uint32(len(payload)), buf.B)
+	assert.NoError(t, err)
 }
